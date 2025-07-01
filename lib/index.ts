@@ -198,7 +198,6 @@ export default class BrowserClient {
       })
     );
   }
-
   async vncUrl(
     container: BrowserServiceContainer & { name: string }
   ): Promise<URL> {
@@ -206,7 +205,7 @@ export default class BrowserClient {
 
     if (info.proxy) {
       const scheme = info.secure ? "wss" : "ws";
-      const host = `vnc.${container.name}${info.proxy.suffix}`;
+      const host = `vnc-${container.name}${info.proxy.suffix}`;
       return new URL(`${scheme}://${host}`);
     } else {
       const url = new URL(this.#baseUrl);
@@ -225,12 +224,11 @@ export default class BrowserClient {
 
     if (info.proxy) {
       const scheme = info.secure ? "https" : "http";
-      const host = `remote.${container.password}.${container.name}${info.proxy.suffix}`;
+      const host = `remote-${container.password}-${container.name}${info.proxy.suffix}`;
       return new URL(`${scheme}://${host}`);
     } else {
       const url = new URL(this.#baseUrl);
       assertNonNull(info.ip, "info.ip");
-
       url.hostname = info.ip;
       url.port = container.services.remote;
       url.protocol = info.secure ? "https:" : "http:";
