@@ -1,6 +1,6 @@
 {
   "name": "@silyze/browsary-cloud-client",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Browser provider for Browsary Cloud instances",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -24,6 +24,7 @@
     "access": "public"
   },
   "dependencies": {
+    "@mojsoski/assert": "^1.0.0",
     "@silyze/browser-provider": "^1.0.0",
     "@silyze/coordinator": "^1.0.0"
   }

@@ -1,10 +1,32 @@
 import type { Browser } from "puppeteer-core";
 import { BrowserProvider, BaseBrowserConfig } from "@silyze/browser-provider";
 import { Coordinator } from "@silyze/coordinator";
+import { assertNonNull } from "@mojsoski/assert";
+
+export type ScoreBreakdownResponse = Record<string, ScoreBreakdown>;
+
+export interface ScoreBreakdown {
+  weights: WeightEntry[];
+  score: number;
+  health: number;
+  status: "healthy" | "unhealthy" | string;
+}
+
+export interface WeightEntry {
+  name: string;
+  multiplier: number;
+  baseValue: number;
+  weightedValue: number;
+}
+
+export type ProxyInfo = {
+  suffix: string;
+  apiUrl: string;
+  servers: string[];
+};
 
 export type ServerOsInfo = {
-  name: string;
-  version?: string;
+  version: string;
   kernel: {
     type: string;
     version: string;
@@ -36,14 +58,18 @@ export type ServerCpuInfo = {
 };
 
 export type ServerInfo = {
-  name: string;
   id: string;
+  secure: boolean;
+  ip?: string;
+  proxy?: ProxyInfo;
+  name: string;
   os: ServerOsInfo;
   memory: ServerMemoryInfo;
   cpu: ServerCpuInfo;
 };
 
 type BrowserServiceContainer = {
+  password: string;
   services: {
     vnc: string;
     remote: string;
@@ -103,26 +129,62 @@ async function handleStreamResponse(
 
 export default class BrowserClient {
   #baseUrl: URL;
+  #token: string | undefined;
 
   get url() {
     return new URL(this.#baseUrl);
   }
 
-  constructor(url: URL) {
+  constructor(url: URL, token?: string) {
     this.#baseUrl = url;
+    this.#token = token;
   }
 
   static default = new BrowserClient(
-    new URL(process.env.BROWSER_SERVER_DEFAULT_URL ?? "http://localhost:39029")
+    new URL(process.env.BROWSER_SERVER_DEFAULT_URL ?? "http://localhost:39029"),
+    process.env.BROWSER_SERVER_DEFAULT_TOKEN
   );
 
+  #makeHeaders(): HeadersInit {
+    const headers: HeadersInit = { "content-type": "application/json" };
+    if (this.#token) {
+      headers["Authorization"] = `Bearer ${this.#token}`;
+    }
+    return headers;
+  }
+
+  #fetch(input: string | URL, init?: RequestInit): Promise<Response> {
+    const headers = this.#makeHeaders();
+    return fetch(input, {
+      ...init,
+      headers: {
+        ...headers,
+        ...(init?.headers ?? {}),
+      },
+    });
+  }
+
   serverInfo() {
-    return handleJsonResponse<ServerInfo>(fetch(new URL("/", this.#baseUrl)));
+    return handleJsonResponse<ServerInfo>(
+      this.#fetch(new URL("/", this.#baseUrl))
+    );
+  }
+
+  async serverScores(): Promise<ScoreBreakdownResponse> {
+    const info = await this.serverInfo();
+
+    if (!info.proxy) {
+      throw new Error("This server does not support proxy scores.");
+    }
+
+    return handleJsonResponse<ScoreBreakdownResponse>(
+      this.#fetch(new URL("/scores", this.#baseUrl))
+    );
   }
 
   list() {
     return handleJsonResponse<(BrowserContainer & { id: string })[]>(
-      fetch(new URL("/containers", this.#baseUrl))
+      this.#fetch(new URL("/containers", this.#baseUrl))
     );
   }
 
@@ -130,44 +192,81 @@ export default class BrowserClient {
     return handleJsonResponse<
       Omit<BrowserContainer, "status" | "state"> & { id: string }
     >(
-      fetch(new URL("/containers", this.#baseUrl), {
+      this.#fetch(new URL("/containers", this.#baseUrl), {
         method: "POST",
-        headers: { "content-type": "application/json" },
         body: JSON.stringify(details),
       })
     );
   }
 
-  vncUrl(container: BrowserServiceContainer) {
-    const url = new URL(this.#baseUrl);
-    url.port = container.services.vnc;
-    url.protocol = url.protocol.replaceAll("http", "ws");
-    return url;
+  async vncUrl(
+    container: BrowserServiceContainer & { name: string }
+  ): Promise<URL> {
+    const info = await this.serverInfo();
+
+    if (info.proxy) {
+      const scheme = info.secure ? "wss" : "ws";
+      const host = `vnc.${container.name}${info.proxy.suffix}`;
+      return new URL(`${scheme}://${host}`);
+    } else {
+      const url = new URL(this.#baseUrl);
+      assertNonNull(info.ip, "info.ip");
+      url.hostname = info.ip;
+      url.port = container.services.vnc;
+      url.protocol = info.secure ? "wss:" : "ws:";
+      return url;
+    }
   }
 
-  sshUrl(container: BrowserServiceContainer) {
+  async remoteUrl(
+    container: BrowserServiceContainer & { name: string }
+  ): Promise<URL> {
+    const info = await this.serverInfo();
+
+    if (info.proxy) {
+      const scheme = info.secure ? "https" : "http";
+      const host = `remote.${container.password}.${container.name}${info.proxy.suffix}`;
+      return new URL(`${scheme}://${host}`);
+    } else {
+      const url = new URL(this.#baseUrl);
+      assertNonNull(info.ip, "info.ip");
+
+      url.hostname = info.ip;
+      url.port = container.services.remote;
+      url.protocol = info.secure ? "https:" : "http:";
+      return url;
+    }
+  }
+
+  async sshUrl(
+    container: BrowserServiceContainer & { name: string }
+  ): Promise<URL> {
+    const info = await this.serverInfo();
+
+    if (info.proxy) {
+      throw new Error("SSH access is not available via proxy");
+    }
+
     const url = new URL(this.#baseUrl);
+    assertNonNull(info.ip, "info.ip");
+    url.hostname = info.ip;
     url.port = container.services.ssh;
     url.protocol = "ssh:";
     url.username = "runner";
     return url;
   }
 
-  remoteUrl(container: BrowserServiceContainer) {
-    const url = new URL(this.#baseUrl);
-    url.port = container.services.remote;
-    return url;
-  }
-
   get(name: string) {
     return handleJsonResponse<BrowserContainer>(
-      fetch(new URL(`/containers/${encodeURIComponent(name)}`, this.#baseUrl))
+      this.#fetch(
+        new URL(`/containers/${encodeURIComponent(name)}`, this.#baseUrl)
+      )
     );
   }
 
   start(name: string) {
     return handleJsonResponse<string>(
-      fetch(
+      this.#fetch(
         new URL(`/containers/${encodeURIComponent(name)}/start`, this.#baseUrl),
         {
           method: "POST",
@@ -178,7 +277,7 @@ export default class BrowserClient {
 
   stop(name: string) {
     return handleJsonResponse<string>(
-      fetch(
+      this.#fetch(
         new URL(`/containers/${encodeURIComponent(name)}/stop`, this.#baseUrl),
         {
           method: "POST",
@@ -189,7 +288,7 @@ export default class BrowserClient {
 
   pause(name: string) {
     return handleJsonResponse<string>(
-      fetch(
+      this.#fetch(
         new URL(`/containers/${encodeURIComponent(name)}/pause`, this.#baseUrl),
         {
           method: "POST",
@@ -200,7 +299,7 @@ export default class BrowserClient {
 
   unpause(name: string) {
     return handleJsonResponse<string>(
-      fetch(
+      this.#fetch(
         new URL(
           `/containers/${encodeURIComponent(name)}/unpause`,
           this.#baseUrl
@@ -214,7 +313,7 @@ export default class BrowserClient {
 
   logs(name: string) {
     return handleStreamResponse(
-      fetch(
+      this.#fetch(
         new URL(`/containers/${encodeURIComponent(name)}/logs`, this.#baseUrl)
       )
     );
@@ -222,12 +321,15 @@ export default class BrowserClient {
 
   attach(name: string, input?: ReadableStream) {
     return handleStreamResponse(
-      fetch(
+      this.#fetch(
         new URL(
           `/containers/${encodeURIComponent(name)}/attach`,
           this.#baseUrl
         ),
-        { method: "POST", body: input }
+        {
+          method: "POST",
+          body: input,
+        }
       )
     );
   }
@@ -259,7 +361,7 @@ export class RemoteBrowserProvider extends BrowserProvider<RemoteBrowserConfig> 
     const client = this.#client ?? BrowserClient.default;
     config ??= this.#default;
     const shouldClose = "args" in config;
-    const remoteUrl = client.remoteUrl(
+    const remoteUrl = await client.remoteUrl(
       "args" in config
         ? await client.create({
             ...config,
