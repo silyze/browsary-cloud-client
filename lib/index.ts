@@ -96,6 +96,14 @@ export type BrowserContainerCreateDetails = {
   image: string;
 };
 
+async function hash128(input: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(input);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer.slice(0, 16))); // 128-bit
+  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 export class BrowserClientError extends Error {}
 
 async function handleError(response: Response): Promise<never> {
@@ -205,10 +213,10 @@ export default class BrowserClient {
     const info = await this.serverInfo();
 
     if (info.proxy) {
+      const base62Id = encodeUuidToBase62(container.name);
+      const hash = await hash128(`vnc|${base62Id}`);
       const scheme = info.secure ? "wss" : "ws";
-      const host = `vnc-${encodeUuidToBase62(container.name)}${
-        info.proxy.suffix
-      }`;
+      const host = `${hash}${info.proxy.suffix}`;
       return new URL(`${scheme}://${host}`);
     } else {
       const url = new URL(this.#baseUrl);
@@ -221,15 +229,15 @@ export default class BrowserClient {
   }
 
   async remoteUrl(
-    container: BrowserServiceContainer & { name: string }
+    container: BrowserServiceContainer & { name: string; password: string }
   ): Promise<URL> {
     const info = await this.serverInfo();
 
     if (info.proxy) {
+      const base62Id = encodeUuidToBase62(container.name);
+      const hash = await hash128(`remote|${base62Id}|${container.password}`);
       const scheme = info.secure ? "https" : "http";
-      const host = `remote-${encodeUuidToBase62(container.password)}-${
-        container.name
-      }${info.proxy.suffix}`;
+      const host = `${hash}${info.proxy.suffix}`;
       return new URL(`${scheme}://${host}`);
     } else {
       const url = new URL(this.#baseUrl);
