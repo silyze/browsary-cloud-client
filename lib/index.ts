@@ -2,6 +2,7 @@ import type { Browser } from "puppeteer-core";
 import { BrowserProvider, BaseBrowserConfig } from "@silyze/browser-provider";
 import { Coordinator } from "@silyze/coordinator";
 import { assertNonNull } from "@mojsoski/assert";
+import { encodeUuidToBase62 } from "./base62";
 
 export type ScoreBreakdownResponse = Record<string, ScoreBreakdown>;
 
@@ -205,7 +206,9 @@ export default class BrowserClient {
 
     if (info.proxy) {
       const scheme = info.secure ? "wss" : "ws";
-      const host = `vnc-${container.name}${info.proxy.suffix}`;
+      const host = `vnc-${encodeUuidToBase62(container.name)}${
+        info.proxy.suffix
+      }`;
       return new URL(`${scheme}://${host}`);
     } else {
       const url = new URL(this.#baseUrl);
@@ -224,7 +227,9 @@ export default class BrowserClient {
 
     if (info.proxy) {
       const scheme = info.secure ? "https" : "http";
-      const host = `remote-${container.password}-${container.name}${info.proxy.suffix}`;
+      const host = `remote-${encodeUuidToBase62(container.password)}-${
+        container.name
+      }${info.proxy.suffix}`;
       return new URL(`${scheme}://${host}`);
     } else {
       const url = new URL(this.#baseUrl);
